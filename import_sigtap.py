@@ -6,15 +6,15 @@ from datetime import datetime, timedelta
 from ftplib import FTP
 import re
 
-# 1. Configurações de Conexão (Pooler porta 6543)
+# 1. Configurações de Ligação (Utiliza o Secret do GitHub)
 db_url = os.getenv('SUPABASE_DB_URL')
 if not db_url:
-    raise ValueError("A variável SUPABASE_DB_URL não foi encontrada!")
+    raise ValueError("A variável SUPABASE_DB_URL não foi encontrada nos Secrets!")
 
 engine = create_engine(db_url)
 
-# 2. Dicionário de Layouts corrigido pelo seu layout.txt
-# Formato: (Nome_Coluna, Inicio_0_based, Fim_0_based)
+# 2. Mapeamento Estrito conforme o seu layout.txt
+# (Nome_Coluna, Inicio_Python, Fim_Python)
 LAYOUTS = {
     'tb_procedimento.txt': {
         'table': 'tb_procedimento',
@@ -75,14 +75,11 @@ LAYOUTS = {
     }
 }
 
-# (Função de download FTP e process_files permanecem com a lógica anterior, 
-# apenas usando os novos campos do dicionário LAYOUTS)
-
 def download_sigtap_from_ftp():
     hoje = datetime.now()
     meses = [hoje.strftime("%Y%m"), (hoje - timedelta(days=30)).strftime("%Y%m")]
     try:
-        print("Conectando ao FTP do DATASUS...")
+        print("Ligando ao FTP do DATASUS...")
         ftp = FTP("ftp2.datasus.gov.br")
         ftp.login()
         ftp.cwd("pub/sistemas/tup/downloads/")
@@ -92,7 +89,7 @@ def download_sigtap_from_ftp():
             matches = [f for f in arquivos_no_servidor if padrao.match(f)]
             if matches:
                 arquivo_alvo = matches[0]
-                print(f"Arquivo encontrado: {arquivo_alvo}. Baixando...")
+                print(f"Ficheiro encontrado: {arquivo_alvo}. A descarregar...")
                 with open("sigtap.zip", "wb") as f:
                     ftp.retrbinary(f"RETR {arquivo_alvo}", f.write)
                 ftp.quit()
@@ -109,20 +106,33 @@ def process_files(comp_atual):
     for arq, info in LAYOUTS.items():
         caminho = os.path.join("extraido", arq)
         if os.path.exists(caminho):
-            print(f"Importando {info['table']}...")
+            print(f"A importar {info['table']}...")
             cols = [f[0] for f in info['fields']]
             positions = [(f[1], f[2]) for f in info['fields']]
+            
+            # Lê o ficheiro de largura fixa
             df = pd.read_fwf(caminho, colspecs=positions, names=cols, encoding='latin1', dtype=str)
+            
+            # Adiciona o carimbo de tempo da importação (coluna extra)
             df['importado_em'] = agora
+            
+            # Lógica para evitar duplicados no mesmo mês
             if info['comp_col']:
+                print(f"A limpar registos de {comp_atual} em {info['table']}...")
                 with engine.connect() as conn:
                     conn.execute(text(f"DELETE FROM {info['table']} WHERE {info['comp_col']} = '{comp_atual}'"))
                     conn.commit()
+            
+            # Envia para o Supabase (APPEND)
             df.to_sql(info['table'], engine, if_exists='append', index=False)
-            print(f"Sucesso: {info['table']} atualizada.")
+            print(f"Sucesso: {info['table']} atualizada com {len(df)} registos.")
+        else:
+            print(f"Aviso: O ficheiro {arq} não foi encontrado no ZIP.")
 
 if __name__ == "__main__":
     competencia = download_sigtap_from_ftp()
     if competencia:
         process_files(competencia)
-        print("=== PROCESSO CONCLUÍDO ===")
+        print("=== PROCESSO CONCLUÍDO COM SUCESSO ===")
+    else:
+        print("Nenhum ficheiro compatível encontrado no FTP.")
