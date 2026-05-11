@@ -1,18 +1,19 @@
 import os
-import requests
 import zipfile
 import pandas as pd
 from sqlalchemy import create_engine, text
-from datetime import datetime
+from datetime import datetime, timedelta
+from ftplib import FTP
+import re
 
 # 1. Configurações de Conexão
 db_url = os.getenv('SUPABASE_DB_URL')
 if not db_url:
-    raise ValueError("A variável SUPABASE_DB_URL não foi configurada nos Secrets!")
+    raise ValueError("A variável SUPABASE_DB_URL não foi configurada!")
 
 engine = create_engine(db_url)
 
-# 2. Definição dos Layouts (As 8 tabelas do seu esquema)
+# Dicionário de Layouts (Mantido conforme as 8 tabelas do seu esquema)
 LAYOUTS = {
     'tb_procedimento.txt': {
         'table': 'tb_procedimento',
@@ -58,61 +59,68 @@ LAYOUTS = {
     }
 }
 
-def download_sigtap():
-    comp = datetime.now().strftime("%Y%m")
-    url = f"http://sia.datasus.gov.br/dissemin/publicos/SIGTAP/{comp}/TabelaUnificada_{comp}.zip"
-    print(f"Buscando SIGTAP competência {comp}...")
+def download_sigtap_from_ftp():
+    hoje = datetime.now()
+    # Tenta o mês atual e o anterior
+    meses = [hoje.strftime("%Y%m"), (hoje - timedelta(days=30)).strftime("%Y%m")]
     
     try:
-        res = requests.get(url, timeout=60)
-        if res.status_code != 200:
-            print(f"Arquivo de {comp} ainda não disponível no DATASUS.")
-            return None
+        print("Conectando ao FTP do DATASUS...")
+        ftp = FTP("ftp2.datasus.gov.br")
+        ftp.login() # Login anônimo
+        ftp.cwd("pub/sistemas/tup/downloads/")
         
-        with open("sigtap.zip", "wb") as f:
-            f.write(res.content)
+        arquivos_no_servidor = ftp.nlst()
         
-        with zipfile.ZipFile("sigtap.zip", 'r') as z:
-            z.extractall("extraido")
-        return comp
+        for comp in meses:
+            # Busca um arquivo que comece com TabelaUnificada_AAAAMM e termine em .zip (case insensitive)
+            padrao = re.compile(f"TabelaUnificada_{comp}.*\\.zip", re.IGNORECASE)
+            matches = [f for f in arquivos_no_servidor if padrao.match(f)]
+            
+            if matches:
+                arquivo_alvo = matches[0]
+                print(f"Arquivo encontrado: {arquivo_alvo}. Iniciando download...")
+                with open("sigtap.zip", "wb") as f:
+                    ftp.retrbinary(f"RETR {arquivo_alvo}", f.write)
+                ftp.quit()
+                
+                with zipfile.ZipFile("sigtap.zip", 'r') as z:
+                    z.extractall("extraido")
+                return comp
+                
+        ftp.quit()
     except Exception as e:
-        print(f"Erro ao baixar arquivo: {e}")
-        return None
+        print(f"Erro na conexão FTP: {e}")
+    
+    return None
 
 def process_files(comp_atual):
     agora = datetime.now()
     for arq, info in LAYOUTS.items():
         caminho = os.path.join("extraido", arq)
         if os.path.exists(caminho):
-            print(f"--- Lendo {arq} ---")
+            print(f"Importando {arq}...")
             cols = [f[0] for f in info['fields']]
             positions = [(f[1], f[2]) for f in info['fields']]
             
-            # Carrega o arquivo de largura fixa
             df = pd.read_fwf(caminho, colspecs=positions, names=cols, encoding='latin1', dtype=str)
-            
-            # Adiciona o carimbo de tempo da importação
             df['importado_em'] = agora
             
-            # Lógica de Histórico Inteligente
             if info['comp_col']:
-                # Se a tabela tem competência, removemos apenas o mês atual para evitar duplicidade
-                print(f"Limpando registros existentes de {comp_atual} em {info['table']}...")
+                print(f"Limpando mês {comp_atual} da tabela {info['table']}...")
                 with engine.connect() as conn:
                     conn.execute(text(f"DELETE FROM {info['table']} WHERE {info['comp_col']} = '{comp_atual}'"))
                     conn.commit()
             
-            # Insere os dados (Modo Append para acumular meses diferentes)
-            print(f"Inserindo dados em {info['table']}...")
             df.to_sql(info['table'], engine, if_exists='append', index=False)
-            print(f"Sucesso! {len(df)} linhas processadas.")
+            print(f"Sucesso: {info['table']} atualizada.")
         else:
-            print(f"Aviso: Arquivo {arq} não encontrado no pacote ZIP.")
+            print(f"Aviso: {arq} não encontrado no ZIP.")
 
 if __name__ == "__main__":
-    competencia = download_sigtap()
+    competencia = download_sigtap_from_ftp()
     if competencia:
         process_files(competencia)
-        print("\n=== PROCESSO FINALIZADO COM SUCESSO ===")
+        print("=== PROCESSO CONCLUÍDO ===")
     else:
-        print("Execução abortada: Arquivo não disponível.")
+        print("Nenhum arquivo compatível encontrado no FTP.")
