@@ -19,8 +19,8 @@ LAYOUTS = {
         'table': 'tb_procedimento',
         'comp_col': 'dt_competencia',
         'fields': [('co_procedimento', 0, 10), ('no_procedimento', 10, 260), ('tp_complexidade', 260, 261), 
-                   ('tp_sexo', 261, 262), ('nu_vlr_sh', 262, 272), ('nu_vlr_sa', 272, 282), ('nu_vlr_sp', 282, 292), 
-                   ('co_financiamento', 292, 294), ('co_rubrica', 294, 300), ('nu_tempo_permanencia', 300, 304), ('dt_competencia', 304, 310)]
+                   ('tp_sexo', 261, 262), ('vl_sh', 262, 272), ('vl_sa', 272, 282), ('vl_sp', 282, 292), 
+                   ('co_financiamento', 292, 294), ('co_rubrica', 294, 300), ('qt_tempo_permanencia', 300, 304), ('dt_competencia', 304, 310)]
     },
     'tb_cid.txt': {
         'table': 'tb_cid',
